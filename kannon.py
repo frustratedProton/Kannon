@@ -1,10 +1,67 @@
 #!/usr/bin/env python3
-# listing all running processes by reading /proc
 
 import os
 import time
 import pwd
 import shutil
+
+def draw_bar(percent, width=20):
+    """Returns a colored bar string like '[|||||     ] 50.0%'"""
+    percent = max(0.0, min(100.0, percent))
+    fill = int(width * (percent / 100))
+    empty = width - fill
+
+    color = "\033[92m"  # green
+    if percent > 50:
+        color = "\033[93m"  # yellow
+    if percent > 80:
+        color = "\033[91m"  # red
+
+    return f"[{color}{'|' * fill}{' ' * empty}\033[0m] {percent:>5.1f}%"
+
+
+def calculate_cpu_usage(curr, prev):# -> float | Any:
+    """Calculate CPU usage % from two (total, idle) snapshots
+    Returns: 
+    """
+    total_d = curr[0] - prev[0]
+    idle_d = curr[1] - prev[1]
+    if total_d <= 0:
+        return 0.0
+    return ((total_d - idle_d) / total_d) * 100
+
+def get_cpu_stats():# -> dict | None:
+    """
+    Reads /proc/stat.
+    """
+
+    stats = {}
+
+    try:
+        with open(f"/proc/stat") as f:
+            lines = f.readlines()
+
+            for line in lines:
+                if not line.startswith("cpu"):
+                    break
+
+                fields = line.split()
+                name = fields[0]
+                values = [float(x) for x in fields[1:]]
+
+                if len(values) >= 10:
+                    values[0] -= values[8]   # user -= guest
+                    values[1] -= values[9]   # nice -= guest_nice
+
+                # Total CPU Time = user + nice + system + idle + iowait + irq + softirq + steal
+                total_cpu_time = sum(values[:8])
+                # idle + iowait
+                idle_cpu_time = values[3] + values[4]
+
+                stats[name] = (total_cpu_time, idle_cpu_time)
+            return stats
+    except (FileNotFoundError, PermissionError, ValueError):
+        return {}
 
 def get_process_info(pid):# -> dict[str, Any] | None:
     """
@@ -26,7 +83,10 @@ def get_process_info(pid):# -> dict[str, Any] | None:
         name = content[first_paran + 1: last_paran]
 
         fields = content[last_paran + 2:].split()
-        # utime = fields[11], stime = fields[12], starttime = fields[19]
+        state = fields[0]
+        ticks = int(fields[11]) + int(fields[12])  # utime + stime
+
+        uid = None
 
         with open(f"/proc/{pid}/status") as f:
             for line in f:
@@ -35,55 +95,164 @@ def get_process_info(pid):# -> dict[str, Any] | None:
                     uid = int(line.split()[1])
                     # print(f">>> uid={uid}")
                     break
+                
+        if uid is None:
+            return None
 
-        try:
-            user = pwd.getpwuid(uid).pw_name
-            # print(f">>> pwd entry: {pwd.getpwuid(uid)}")
-        except KeyError:
-            user = str(uid)
 
         return {
             "pid": pid,
             "name": name,
-            "state": fields[0],
-            "ppid": fields[1],
-            "user": user
+            "state": state,
+            "ticks": ticks,
+            "uid": uid,            
         }
 
     except (PermissionError, FileNotFoundError, ValueError, IndexError):
         return None
 
+def get_user(uid, cache):
+    if uid in cache:
+        return cache[uid]
+    try:
+        user = pwd.getpwuid(uid).pw_name
+    except KeyError:
+        user = str(uid)
+    cache[uid] = user
+    return user
 
-while True:
-    cols = shutil.get_terminal_size().columns
-    name_width = cols - 40
-    os.system("clear")
 
-    # header
-    print(f"{'PID':>7} | {'USER':<12} | {'STATE':^5} | {'NAME':<{name_width}}")
-    print("=" * (cols - 1))
+def main():
+    prev_cpu_stats = get_cpu_stats()
+    prev_procs = {}
+    user_cache = {}
+    cpu_count = os.cpu_count() or 1
 
-    pids = [p for p in os.listdir("/proc") if p.isdigit()]
+    while True:
+        curr_cpu_stats = get_cpu_stats()
+        cols = shutil.get_terminal_size().columns
+        rows = shutil.get_terminal_size().lines
+        os.system("clear")
 
-    for pid in sorted(pids, key=int):
-        proc = get_process_info(pid)
+        cores = sorted(
+            [k for k in curr_cpu_stats if k != "cpu"],
+            key=lambda x: int(x.replace("cpu", "")),
+        )
+
+        if cores:
+            label_width = len(f"CPU{cores[-1].replace('cpu', '')}")
+        else:
+            label_width = 3
+        label_width = max(label_width, 3)
+
+        bar_width = max(5, (cols - 4 - 2 * (label_width + 11)) // 2)
+
+        # todo: this subtraction needs to be dynamic
+        # looks fine when its entire terminal
+        # but overflows when opened in split terminal in vscode
+        avg_bar_width = cols - label_width - 10
         
-        if not proc:
-            continue
-        
-        p_user = proc['user']
-        p_name = proc['name']
+        agg_curr = curr_cpu_stats.get("cpu", (0, 0))
+        agg_prev = prev_cpu_stats.get("cpu", (0, 0))
+        global_usage = calculate_cpu_usage(agg_curr, agg_prev)
+        print(f"  {'AVG':<{label_width}}: {draw_bar(global_usage, avg_bar_width)}")
 
-        if len(p_user) > 12:
-            p_user = p_user[:11] + "…"
-        if len(p_name) > name_width:
-            p_name = p_name[:name_width - 1] + "…"
+        half = (len(cores) + 1) // 2
 
-        
-        print(f"{proc['pid']:>7} | {p_user:<12} | {proc['state']:^5} | {p_name:<20}")
-            
-    print("=" * (cols - 1))
-    # im not using all states specified in manfile `proc_pid_stat(5)`
-    # these should suffice for now i believe
-    print("States: R=Running S=Sleeping D=Disk Z=Zombie T=Stopped")
-    time.sleep(1)
+        for i in range(half):
+            left_name = cores[i]
+            left_usage = calculate_cpu_usage(
+                curr_cpu_stats[left_name],
+                prev_cpu_stats.get(left_name, (0, 0)),
+            )
+            left = (
+                f"{left_name.upper():<{label_width}}: {draw_bar(left_usage, bar_width)}"
+            )
+
+            right = ""
+            j = i + half
+            if j < len(cores):
+                right_name = cores[j]
+                right_usage = calculate_cpu_usage(
+                    curr_cpu_stats[right_name],
+                    prev_cpu_stats.get(right_name, (0, 0)),
+                )
+                right = f"{right_name.upper():<{label_width}}: {draw_bar(right_usage, bar_width)}"
+
+            print(f"  {left}  {right}")
+
+        print("=" * cols)
+
+        name_width = cols - 48
+        print(
+            f"{'PID':>7} | {'USER':<12} | {'%CPU':>6} | {'STATE':^5} | {'NAME':<{name_width}}"
+        )
+        print("=" * cols)
+
+        pids = [p for p in os.listdir("/proc") if p.isdigit()]
+        display_list = []
+        curr_procs_state = {}
+
+        sys_total_delta = max(1, agg_curr[0] - agg_prev[0])
+
+        for pid in pids:
+            proc = get_process_info(pid)
+            if not proc:
+                continue
+
+            pid_int = int(proc["pid"])
+            prev_ticks = prev_procs.get(pid_int, None)
+
+            # first iteration show crazy spikes between delta
+            # skip it
+            if prev_ticks is not None:
+                proc_delta = proc["ticks"] - prev_ticks
+                proc["cpu_usage"] = (proc_delta / sys_total_delta) * 100 * cpu_count
+            else:
+                proc["cpu_usage"] = 0.0
+
+
+            curr_procs_state[pid_int] = proc["ticks"]
+            display_list.append(proc)
+
+        display_list.sort(key=lambda x: x["cpu_usage"], reverse=True)
+
+        header_height = 1 + half + 3
+        max_rows = rows - header_height - 3
+
+        for proc in display_list[:max_rows]:
+            user = get_user(proc["uid"], user_cache)
+            name = proc["name"]
+
+            if len(user) > 12:
+                user = user[:11] + "…"
+            if len(name) > name_width:
+                name = name[: name_width - 1] + "…"
+
+            line = (
+                f"{proc['pid']:>7} | {user:<12} | {proc['cpu_usage']:>5.1f}% "
+                f"| {proc['state']:^5} | {name:<{name_width}}"
+            )
+
+            if proc["cpu_usage"] > 50:
+                line = f"\033[1;31m{line}\033[0m"
+
+            print(line)
+
+        print("=" * cols)
+        print(
+            f"Tasks: {len(display_list)} | "
+            "States: R=Running S=Sleeping D=Disk Z=Zombie T=Stopped"
+        )
+
+        prev_cpu_stats = curr_cpu_stats
+        prev_procs = curr_procs_state
+
+        time.sleep(1)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
