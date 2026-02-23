@@ -121,6 +121,25 @@ def get_user(uid, cache):
     cache[uid] = user
     return user
 
+def get_uptime():
+    """Returns formatted uptime string"""
+    with open("/proc/uptime") as f:
+        uptime_seconds = float(f.read().split()[0])
+        uptime_hours = int((uptime_seconds % 86400) // 3600)
+        uptime_minutes = int((uptime_seconds % 3600) // 60)
+        uptime_days = int(uptime_seconds // 86400)
+
+        if uptime_days > 0:
+            return f"{uptime_days} days, {uptime_hours:02}:{uptime_minutes:02}:{uptime_seconds:02}"
+        return f"{uptime_hours:02}:{uptime_minutes:02}:{uptime_seconds:02}"
+
+
+def get_loadavg():
+    """Returns load average string (1, 5, 15 min)"""
+    with open("/proc/loadavg") as f:
+        fields = f.read().split()
+    return f"{fields[0]} {fields[1]} {fields[2]}"
+
 
 def main():
     prev_cpu_stats = get_cpu_stats()
@@ -133,6 +152,11 @@ def main():
         cols = shutil.get_terminal_size().columns
         rows = shutil.get_terminal_size().lines
         os.system("clear")
+
+        uptime = get_uptime()
+        loadavg = get_loadavg()
+        header = f"Uptime: {uptime}  Load: {loadavg}"
+        print(f"{header:>{cols}}")
 
         cores = sorted(
             [k for k in curr_cpu_stats if k != "cpu"],
@@ -147,11 +171,8 @@ def main():
 
         bar_width = max(5, (cols - 4 - 2 * (label_width + 11)) // 2)
 
-        # todo: this subtraction needs to be dynamic
-        # looks fine when its entire terminal
-        # but overflows when opened in split terminal in vscode
-        avg_bar_width = cols - label_width - 10
-        
+        avg_bar_width = max(5, cols - label_width - 14)
+
         agg_curr = curr_cpu_stats.get("cpu", (0, 0))
         agg_prev = prev_cpu_stats.get("cpu", (0, 0))
         global_usage = calculate_cpu_usage(agg_curr, agg_prev)
@@ -203,21 +224,18 @@ def main():
             pid_int = int(proc["pid"])
             prev_ticks = prev_procs.get(pid_int, None)
 
-            # first iteration show crazy spikes between delta
-            # skip it
             if prev_ticks is not None:
                 proc_delta = proc["ticks"] - prev_ticks
                 proc["cpu_usage"] = (proc_delta / sys_total_delta) * 100 * cpu_count
             else:
                 proc["cpu_usage"] = 0.0
 
-
             curr_procs_state[pid_int] = proc["ticks"]
             display_list.append(proc)
 
         display_list.sort(key=lambda x: x["cpu_usage"], reverse=True)
 
-        header_height = 1 + half + 3
+        header_height = 1 + 1 + half + 3
         max_rows = rows - header_height - 3
 
         for proc in display_list[:max_rows]:
