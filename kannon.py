@@ -5,6 +5,7 @@ import time
 import pwd
 import shutil
 
+
 def draw_bar(percent, width=20):
     """Returns a colored bar string like '[|||||     ] 50.0%'"""
     percent = max(0.0, min(100.0, percent))
@@ -20,9 +21,9 @@ def draw_bar(percent, width=20):
     return f"[{color}{'|' * fill}{' ' * empty}\033[0m] {percent:>5.1f}%"
 
 
-def calculate_cpu_usage(curr, prev):# -> float | Any:
+def calculate_cpu_usage(curr, prev):  # -> float | Any:
     """Calculate CPU usage % from two (total, idle) snapshots
-    Returns: 
+    Returns:
     """
     total_d = curr[0] - prev[0]
     idle_d = curr[1] - prev[1]
@@ -30,7 +31,8 @@ def calculate_cpu_usage(curr, prev):# -> float | Any:
         return 0.0
     return ((total_d - idle_d) / total_d) * 100
 
-def get_cpu_stats():# -> dict | None:
+
+def get_cpu_stats():  # -> dict | None:
     """
     Reads /proc/stat.
     """
@@ -50,8 +52,8 @@ def get_cpu_stats():# -> dict | None:
                 values = [float(x) for x in fields[1:]]
 
                 if len(values) >= 10:
-                    values[0] -= values[8]   # user -= guest
-                    values[1] -= values[9]   # nice -= guest_nice
+                    values[0] -= values[8]  # user -= guest
+                    values[1] -= values[9]  # nice -= guest_nice
 
                 # Total CPU Time = user + nice + system + idle + iowait + irq + softirq + steal
                 total_cpu_time = sum(values[:8])
@@ -63,7 +65,8 @@ def get_cpu_stats():# -> dict | None:
     except (FileNotFoundError, PermissionError, ValueError):
         return {}
 
-def get_process_info(pid):# -> dict[str, Any] | None:
+
+def get_process_info(pid):  # -> dict[str, Any] | None:
     """
     Reads process details from /proc.
     Returns dict {pid, name, state, ppid, user} or None on failure.
@@ -80,9 +83,9 @@ def get_process_info(pid):# -> dict[str, Any] | None:
 
         # instead of using /proc/:pid/comm, we can just
         # use /proc/:pid/stat to get it
-        name = content[first_paran + 1: last_paran]
+        name = content[first_paran + 1 : last_paran]
 
-        fields = content[last_paran + 2:].split()
+        fields = content[last_paran + 2 :].split()
         state = fields[0]
         ticks = int(fields[11]) + int(fields[12])  # utime + stime
 
@@ -95,7 +98,7 @@ def get_process_info(pid):# -> dict[str, Any] | None:
                     uid = int(line.split()[1])
                 elif line.startswith("VmRSS:"):
                     rss = int(line.split()[1])
-                    
+
         if uid is None:
             return None
 
@@ -104,12 +107,13 @@ def get_process_info(pid):# -> dict[str, Any] | None:
             "name": name,
             "state": state,
             "ticks": ticks,
-            "uid": uid,          
+            "uid": uid,
             "rss": rss,
         }
 
     except (PermissionError, FileNotFoundError, ValueError, IndexError):
         return None
+
 
 def get_user(uid, cache):
     if uid in cache:
@@ -121,18 +125,21 @@ def get_user(uid, cache):
     cache[uid] = user
     return user
 
+
 def get_memory_info():
-    """Returns (total_kb, available_kb) from /proc/meminfo"""
-    total_memory = available_memory = 0
+    """Returns (mem_total, mem_available, swap_total, swap_free) from /proc/meminfo"""
+    total_memory = available_memory = swap_total = swap_free = 0
     with open("/proc/meminfo") as f:
         for line in f:
             if line.startswith("MemTotal:"):
                 total_memory = int(line.split()[1])
             elif line.startswith("MemAvailable:"):
                 available_memory = int(line.split()[1])
-            if total_memory and available_memory:
-                break
-    return total_memory, available_memory
+            elif line.startswith("SwapTotal:"):
+                swap_total = int(line.split()[1])
+            elif line.startswith("SwapFree:"):
+                swap_free = int(line.split()[1])
+    return total_memory, available_memory, swap_total, swap_free
 
 
 def format_kb(kb):
@@ -190,7 +197,7 @@ def main():
 
         bar_width = max(5, (cols - 4 - 2 * (label_width + 11)) // 2)
 
-        avg_bar_width = max(5, cols - label_width - 14)
+        avg_bar_width = max(5, cols - label_width - 15)
 
         agg_curr = curr_cpu_stats.get("cpu", (0, 0))
         agg_prev = prev_cpu_stats.get("cpu", (0, 0))
@@ -226,11 +233,21 @@ def main():
         header = f"Uptime: {uptime}  Load: {loadavg}"
         print(f"{header:>{cols}}")
 
-        mem_total, mem_available = get_memory_info()
+        mem_total, mem_available, swap_total, swap_free = get_memory_info()
         mem_used = mem_total - mem_available
         mem_percent = (mem_used / mem_total) * 100 if mem_total else 0
-        mem_bar = draw_bar(mem_percent, 20)
-        print(f"  Mem: {format_kb(mem_used)}/{format_kb(mem_total)} {mem_bar}")
+        swap_used = swap_total - swap_free
+        swap_percent = (swap_used / swap_total) * 100 if swap_total else 0
+
+        mem_used_str = format_kb(mem_used)
+        mem_total_str = format_kb(mem_total)
+        swap_used_str = format_kb(swap_used)
+        swap_total_str = format_kb(swap_total)
+
+        val_width = max(len(mem_used_str), len(mem_total_str), len(swap_used_str), len(swap_total_str))
+
+        print(f"  Mem: {mem_used_str:>{val_width}}/{mem_total_str:>{val_width}} {draw_bar(mem_percent, 20)}")
+        print(f"  Swp: {swap_used_str:>{val_width}}/{swap_total_str:>{val_width}} {draw_bar(swap_percent, 20)}")
 
         print("=" * cols)
 
