@@ -87,25 +87,25 @@ def get_process_info(pid):# -> dict[str, Any] | None:
         ticks = int(fields[11]) + int(fields[12])  # utime + stime
 
         uid = None
+        rss = 0
 
         with open(f"/proc/{pid}/status") as f:
             for line in f:
                 if line.startswith("Uid:"):
-                    # print(f">>> {line.strip()}")
                     uid = int(line.split()[1])
-                    # print(f">>> uid={uid}")
-                    break
-                
+                elif line.startswith("VmRSS:"):
+                    rss = int(line.split()[1])
+                    
         if uid is None:
             return None
-
 
         return {
             "pid": pid,
             "name": name,
             "state": state,
             "ticks": ticks,
-            "uid": uid,            
+            "uid": uid,          
+            "rss": rss,
         }
 
     except (PermissionError, FileNotFoundError, ValueError, IndexError):
@@ -120,6 +120,30 @@ def get_user(uid, cache):
         user = str(uid)
     cache[uid] = user
     return user
+
+def get_memory_info():
+    """Returns (total_kb, available_kb) from /proc/meminfo"""
+    total_memory = available_memory = 0
+    with open("/proc/meminfo") as f:
+        for line in f:
+            if line.startswith("MemTotal:"):
+                total_memory = int(line.split()[1])
+            elif line.startswith("MemAvailable:"):
+                available_memory = int(line.split()[1])
+            if total_memory and available_memory:
+                break
+    return total_memory, available_memory
+
+
+def format_kb(kb):
+    """Formats kB as human-readable string"""
+    if kb < 1024:
+        return f"{kb}K"
+    elif kb < 1024 * 1024:
+        return f"{kb / 1024:.1f}M"
+    else:
+        return f"{kb / (1024 * 1024):.1f}G"
+
 
 def get_uptime():
     """Returns formatted uptime string"""
@@ -152,11 +176,6 @@ def main():
         cols = shutil.get_terminal_size().columns
         rows = shutil.get_terminal_size().lines
         os.system("clear")
-
-        uptime = get_uptime()
-        loadavg = get_loadavg()
-        header = f"Uptime: {uptime}  Load: {loadavg}"
-        print(f"{header:>{cols}}")
 
         cores = sorted(
             [k for k in curr_cpu_stats if k != "cpu"],
@@ -202,11 +221,23 @@ def main():
 
             print(f"  {left}  {right}")
 
+        uptime = get_uptime()
+        loadavg = get_loadavg()
+        header = f"Uptime: {uptime}  Load: {loadavg}"
+        print(f"{header:>{cols}}")
+
+        mem_total, mem_available = get_memory_info()
+        mem_used = mem_total - mem_available
+        mem_percent = (mem_used / mem_total) * 100 if mem_total else 0
+        mem_bar = draw_bar(mem_percent, 20)
+        print(f"  Mem: {format_kb(mem_used)}/{format_kb(mem_total)} {mem_bar}")
+
         print("=" * cols)
 
-        name_width = cols - 48
+        name_width = cols - 57
+
         print(
-            f"{'PID':>7} | {'USER':<12} | {'%CPU':>6} | {'STATE':^5} | {'NAME':<{name_width}}"
+            f"{'PID':>7} | {'USER':<12} | {'%CPU':>6} | {'%MEM':>6} | {'STATE':^5} | {'NAME':<{name_width}}"
         )
         print("=" * cols)
 
@@ -242,6 +273,8 @@ def main():
             user = get_user(proc["uid"], user_cache)
             name = proc["name"]
 
+            mem_percent = (proc["rss"] / mem_total) * 100 if mem_total else 0
+
             if len(user) > 12:
                 user = user[:11] + "…"
             if len(name) > name_width:
@@ -249,7 +282,7 @@ def main():
 
             line = (
                 f"{proc['pid']:>7} | {user:<12} | {proc['cpu_usage']:>5.1f}% "
-                f"| {proc['state']:^5} | {name:<{name_width}}"
+                f"| {mem_percent:>5.1f}% | {proc['state']:^5} | {name:<{name_width}}"
             )
 
             if proc["cpu_usage"] > 50:
