@@ -12,7 +12,7 @@ def init_colors():
     curses.init_pair(1, curses.COLOR_GREEN, -1)    # low usage
     curses.init_pair(2, curses.COLOR_YELLOW, -1)   # medium usage
     curses.init_pair(3, curses.COLOR_RED, -1)       # high usage
-    curses.init_pair(4, curses.COLOR_CYAN, -1)      # headers 
+    curses.init_pair(4, curses.COLOR_CYAN, -1)      # headers / separators
 
 
 def safe_addstr(stdscr, row, col, text, attr=0):
