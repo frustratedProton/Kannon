@@ -4,6 +4,8 @@ import os
 import pwd
 import curses
 
+CLOCK_TICKS = os.sysconf("SC_CLK_TCK")
+
 def init_color():
     """ "curses color pairs for utilization"""
     curses.start_color()
@@ -139,6 +141,7 @@ def get_process_info(pid):  # -> dict[str, Any] | None:
             "name": name,
             "state": state,
             "ticks": ticks,
+            "cpu_time": ticks / CLOCK_TICKS,
             "uid": uid,
             "rss": rss,
         }
@@ -184,6 +187,15 @@ def format_kb(kb):
         return f"{kb / (1024 * 1024):.1f}G"
 
 
+def format_time(seconds):
+    """Formats seconds as H:MM:SS or M:SS"""
+    minutes, secs = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours > 0:
+        return f"{hours}:{minutes:02}:{secs:02}"
+    return f"{minutes}:{secs:02}"
+
+
 def get_uptime():
     """Returns formatted uptime string"""
     with open("/proc/uptime") as f:
@@ -216,200 +228,242 @@ def main(stdscr):
     user_cache = {}
     cpu_count = os.cpu_count() or 1
 
+    sort_key = "cpu"
+
     while True:
-        stdscr.erase()        
+        stdscr.erase()
         max_y, max_x = stdscr.getmaxyx()
 
         if max_y < 10 or max_x < 40:
             display_text(stdscr, 0, 0, "Terminal too small!", curses.A_BOLD)
-            stdscr.refresh()
-            key = stdscr.getch()
-            if key == ord("q"):
-                break
-            continue
-
-        curr_cpu_stats = get_cpu_stats()
-        row = 0
-
-        cores = sorted(
-            [k for k in curr_cpu_stats if k != "cpu"],
-            key=lambda x: int(x.replace("cpu", "")),
-        )
-
-        if cores:
-            label_width = len(f"CPU{cores[-1].replace('cpu', '')}")
         else:
-            label_width = 3
-        label_width = max(label_width, 3)
+            curr_cpu_stats = get_cpu_stats()
+            row = 0
 
-        bar_width = max(5, (max_x - 4 - 2 * (label_width + 11)) // 2)
-
-        agg_curr = curr_cpu_stats.get("cpu", (0, 0))
-        agg_prev = prev_cpu_stats.get("cpu", (0, 0))
-        global_usage = calculate_cpu_usage(agg_curr, agg_prev)
-        avg_bar_width = 2 * bar_width + label_width + 13
-
-        display_text(stdscr, row, 2, f"{'AVG':<{label_width}}: ", curses.A_BOLD)
-        draw_bar(stdscr, row, 2 + label_width + 2, global_usage, avg_bar_width)
-        row += 1
-
-        half = (len(cores) + 1) // 2
-        col_width = label_width + 2 + bar_width + 9
-
-        for i in range(half):
-            if row >= max_y:
-                break
-
-            left_name = cores[i]
-            left_usage = calculate_cpu_usage(
-                curr_cpu_stats[left_name],
-                prev_cpu_stats.get(left_name, (0, 0)),
+            cores = sorted(
+                [k for k in curr_cpu_stats if k != "cpu"],
+                key=lambda x: int(x.replace("cpu", "")),
             )
-            display_text(stdscr, row, 2, f"{left_name.upper():<{label_width}}: ")
-            draw_bar(stdscr, row, 2 + label_width + 2, left_usage, bar_width)
 
-            j = i + half
-            if j < len(cores):
-                rc = 2 + col_width + 2
-                right_name = cores[j]
-                right_usage = calculate_cpu_usage(
-                    curr_cpu_stats[right_name],
-                    prev_cpu_stats.get(right_name, (0, 0)),
+            if cores:
+                label_width = len(f"CPU{cores[-1].replace('cpu', '')}")
+            else:
+                label_width = 3
+            label_width = max(label_width, 3)
+
+            bar_width = max(5, (max_x - 4 - 2 * (label_width + 11)) // 2)
+
+            agg_curr = curr_cpu_stats.get("cpu", (0, 0))
+            agg_prev = prev_cpu_stats.get("cpu", (0, 0))
+            global_usage = calculate_cpu_usage(agg_curr, agg_prev)
+            avg_bar_width = 2 * bar_width + label_width + 13
+
+            display_text(stdscr, row, 2, f"{'AVG':<{label_width}}: ", curses.A_BOLD)
+            draw_bar(stdscr, row, 2 + label_width + 2, global_usage, avg_bar_width)
+            row += 1
+
+            half = (len(cores) + 1) // 2
+            col_width = label_width + 2 + bar_width + 9
+
+            for i in range(half):
+                if row >= max_y:
+                    break
+
+                left_name = cores[i]
+                left_usage = calculate_cpu_usage(
+                    curr_cpu_stats[left_name],
+                    prev_cpu_stats.get(left_name, (0, 0)),
                 )
-                display_text(stdscr, row, rc, f"{right_name.upper():<{label_width}}: ")
-                draw_bar(stdscr, row, rc + label_width + 2, right_usage, bar_width)
-            row += 1
+                display_text(stdscr, row, 2, f"{left_name.upper():<{label_width}}: ")
+                draw_bar(stdscr, row, 2 + label_width + 2, left_usage, bar_width)
 
-        if row < max_y:
-            header = f"Uptime: {get_uptime()}  Load: {get_loadavg()}"
-            display_text(
-                stdscr,
-                row,
-                max(0, max_x - len(header) - 1),
-                header,
-                curses.color_pair(4),
-            )
-            row += 1
+                j = i + half
+                if j < len(cores):
+                    rc = 2 + col_width + 2
+                    right_name = cores[j]
+                    right_usage = calculate_cpu_usage(
+                        curr_cpu_stats[right_name],
+                        prev_cpu_stats.get(right_name, (0, 0)),
+                    )
+                    display_text(
+                        stdscr, row, rc, f"{right_name.upper():<{label_width}}: "
+                    )
+                    draw_bar(stdscr, row, rc + label_width + 2, right_usage, bar_width)
+                row += 1
 
-        mem_total, mem_available, swap_total, swap_free = get_memory_info()
-        mem_used = mem_total - mem_available
-        mem_percent = (mem_used / mem_total) * 100 if mem_total else 0
-        swap_used = swap_total - swap_free
-        swap_percent = (swap_used / swap_total) * 100 if swap_total else 0
+            if row < max_y:
+                header = f"Uptime: {get_uptime()}  Load: {get_loadavg()}"
+                display_text(
+                    stdscr,
+                    row,
+                    max(0, max_x - len(header) - 1),
+                    header,
+                    curses.color_pair(4),
+                )
+                row += 1
 
-        mem_used_str = format_kb(mem_used)
-        mem_total_str = format_kb(mem_total)
-        swap_used_str = format_kb(swap_used)
-        swap_total_str = format_kb(swap_total)
+            mem_total, mem_available, swap_total, swap_free = get_memory_info()
+            mem_used = mem_total - mem_available
+            mem_percent = (mem_used / mem_total) * 100 if mem_total else 0
+            swap_used = swap_total - swap_free
+            swap_percent = (swap_used / swap_total) * 100 if swap_total else 0
 
-        val_width = max(len(mem_used_str), len(mem_total_str), len(swap_used_str), len(swap_total_str))
+            mem_used_str = format_kb(mem_used)
+            mem_total_str = format_kb(mem_total)
+            swap_used_str = format_kb(swap_used)
+            swap_total_str = format_kb(swap_total)
 
-        if row < max_y:
-            lbl = f"  Mem: {mem_used_str:>{val_width}}/{mem_total_str:>{val_width}} "
-            display_text(stdscr, row, 0, lbl)
-            draw_bar(stdscr, row, len(lbl), mem_percent, 20)
-            row += 1
-
-        if row < max_y:
-            lbl = f"  Swp: {swap_used_str:>{val_width}}/{swap_total_str:>{val_width}} "
-            display_text(stdscr, row, 0, lbl)
-            draw_bar(stdscr, row, len(lbl), swap_percent, 20)
-            row += 1
-
-        sep = "=" * (max_x - 1)
-        name_width = max(4, max_x - 57)
-
-        if row < max_y:
-            display_text(stdscr, row, 0, sep, curses.color_pair(4))
-            row += 1
-
-        if row < max_y:
-            hdr = (
-                f"{'PID':>7} | {'USER':<12} | {'%CPU':>6} | "
-                f"{'%MEM':>6} | {'STATE':^5} | {'NAME':<{name_width}}"
-            )
-            display_text(stdscr, row, 0, hdr, curses.A_BOLD | curses.color_pair(4))
-            row += 1
-
-        if row < max_y:
-            display_text(stdscr, row, 0, sep, curses.color_pair(4))
-            row += 1
-
-        pids = [p for p in os.listdir("/proc") if p.isdigit()]
-        display_list = []
-        curr_procs_state = {}
-
-        sys_total_delta = max(1, agg_curr[0] - agg_prev[0])
-
-        for pid in pids:
-            proc = get_process_info(pid)
-            if not proc:
-                continue
-
-            pid_int = int(proc["pid"])
-            prev_ticks = prev_procs.get(pid_int, None)
-
-            if prev_ticks is not None:
-                proc_delta = proc["ticks"] - prev_ticks
-                proc["cpu_usage"] = (proc_delta / sys_total_delta) * 100 * cpu_count
-            else:
-                proc["cpu_usage"] = 0.0
-
-            curr_procs_state[pid_int] = proc["ticks"]
-            display_list.append(proc)
-
-        display_list.sort(key=lambda x: x["cpu_usage"], reverse=True)
-
-        footer_rows = 2
-        max_proc_rows = max(0, max_y - row - footer_rows)
-
-        for proc in display_list[:max_proc_rows]:
-            if row >= max_y - footer_rows:
-                break
-
-            user = get_user(proc["uid"], user_cache)
-            name = proc["name"]
-
-            mem_percent = (proc["rss"] / mem_total) * 100 if mem_total else 0
-
-            if len(user) > 12:
-                user = user[:11] + "~"
-            if len(name) > name_width:
-                name = name[: name_width - 1] + "…"
-
-            line = (
-                f"{proc['pid']:>7} | {user:<12} | {proc['cpu_usage']:>5.1f}% "
-                f"| {mem_percent:>5.1f}% | {proc['state']:^5} | {name:<{name_width}}"
+            val_width = max(
+                len(mem_used_str),
+                len(mem_total_str),
+                len(swap_used_str),
+                len(swap_total_str),
             )
 
-            if proc["cpu_usage"] > 50:
-                attr = curses.color_pair(3) | curses.A_BOLD
-            elif proc["cpu_usage"] > 10:
-                attr = curses.color_pair(2)
-            else:
-                attr = curses.color_pair(1)
+            if row < max_y:
+                lbl = (
+                    f"  Mem: {mem_used_str:>{val_width}}/{mem_total_str:>{val_width}} "
+                )
+                display_text(stdscr, row, 0, lbl)
+                draw_bar(stdscr, row, len(lbl), mem_percent, 20)
+                row += 1
 
-            display_text(stdscr, row, 0, line, attr)
-            row += 1
+            if row < max_y:
+                lbl = f"  Swp: {swap_used_str:>{val_width}}/{swap_total_str:>{val_width}} "
+                display_text(stdscr, row, 0, lbl)
+                draw_bar(stdscr, row, len(lbl), swap_percent, 20)
+                row += 1
 
-        footer_row = max_y - 2
-        if footer_row >= row and footer_row < max_y:
-            display_text(stdscr, footer_row, 0, sep, curses.color_pair(4))
-        if footer_row + 1 < max_y:
-            status = (
-                f" Tasks: {len(display_list)} | "
-                "R=Run S=Sleep D=Disk Z=Zombie T=Stop | q=Quit"
-            )
-            display_text(stdscr, footer_row + 1, 0, status, curses.A_BOLD)
+            sep = "=" * (max_x - 1)
+            name_width = max(4, max_x - 67)
+
+            if row < max_y:
+                display_text(stdscr, row, 0, sep, curses.color_pair(4))
+                row += 1
+
+            if row < max_y:
+                pid_label = "▼PID" if sort_key == "pid" else "PID"
+                cpu_label = "▼%CPU" if sort_key == "cpu" else "%CPU"
+                mem_label = "▼%MEM" if sort_key == "mem" else "%MEM"
+                time_label = "▼TIME" if sort_key == "time" else "%TIME"
+
+                hdr = (
+                    f"{pid_label:>7} | {'USER':<12} | {cpu_label:>6} | "
+                    f"{mem_label:>6} | {time_label:>8} | {'STATE':^5} | {'NAME':<{name_width}}"
+                )
+
+                display_text(
+                    stdscr,
+                    row,
+                    0,
+                    hdr,
+                    curses.A_BOLD | curses.color_pair(4),
+                )
+                row += 1
+
+            if row < max_y:
+                display_text(stdscr, row, 0, sep, curses.color_pair(4))
+                row += 1
+
+            pids = [p for p in os.listdir("/proc") if p.isdigit()]
+            display_list = []
+            curr_procs_state = {}
+
+            sys_total_delta = max(1, agg_curr[0] - agg_prev[0])
+
+            for pid in pids:
+                proc = get_process_info(pid)
+                if not proc:
+                    continue
+
+                pid_int = int(proc["pid"])
+                prev_ticks = prev_procs.get(pid_int, None)
+
+                if prev_ticks is not None:
+                    proc_delta = proc["ticks"] - prev_ticks
+                    proc["cpu_usage"] = (proc_delta / sys_total_delta) * 100 * cpu_count
+                else:
+                    proc["cpu_usage"] = 0.0
+
+                curr_procs_state[pid_int] = proc["ticks"]
+                display_list.append(proc)
+
+            if sort_key == "cpu":
+                display_list.sort(key=lambda x: x["cpu_usage"], reverse=True)
+            elif sort_key == "mem":
+                display_list.sort(key=lambda x: x["rss"], reverse=True)
+            elif sort_key == "pid":
+                display_list.sort(key=lambda x: int(x["pid"]))
+            elif sort_key == "time":
+                display_list.sort(key=lambda x: x["cpu_time"], reverse=True)
+
+            footer_rows = 2
+            max_proc_rows = max(0, max_y - row - footer_rows)
+
+            for proc in display_list[:max_proc_rows]:
+                if row >= max_y - footer_rows:
+                    break
+
+                user = get_user(proc["uid"], user_cache)
+                name = proc["name"]
+
+                proc_mem = (proc["rss"] / mem_total) * 100 if mem_total else 0
+
+                if len(user) > 12:
+                    user = user[:11] + "~"
+                if len(name) > name_width:
+                    name = name[: name_width - 1] + "…"
+
+                line = (
+                    f"{proc['pid']:>7} | {user:<12} | {proc['cpu_usage']:>5.1f}% "
+                    f"| {proc_mem:>5.1f}% | {format_time(proc['cpu_time']):>8} "
+                    f"| {proc['state']:^5} | {name:<{name_width}}"
+                )
+
+                if proc["cpu_usage"] > 50:
+                    attr = curses.color_pair(3) | curses.A_BOLD
+                elif proc["cpu_usage"] > 10:
+                    attr = curses.color_pair(2)
+                else:
+                    attr = curses.color_pair(1)
+
+                display_text(stdscr, row, 0, line, attr)
+                row += 1
+
+            footer_row = max_y - 2
+            if footer_row >= row and footer_row < max_y:
+                display_text(stdscr, footer_row, 0, sep, curses.color_pair(4))
+            if footer_row + 1 < max_y:
+                sort_labels = {
+                    "cpu": "CPU%",
+                    "mem": "MEM%",
+                    "pid": "PID",
+                    "time": "TIME",
+                }
+
+                status = (
+                    f" Tasks: {len(display_list)} | "
+                    f"Sort: {sort_labels[sort_key]} (P=CPU M=Mem N=PID T=Time) | q=Quit"
+                )
+
+                display_text(stdscr, footer_row + 1, 0, status, curses.A_BOLD)
+
+            prev_cpu_stats = curr_cpu_stats
+            prev_procs = curr_procs_state
 
         stdscr.refresh()
-
-        prev_cpu_stats = curr_cpu_stats
-        prev_procs = curr_procs_state
 
         key = stdscr.getch()
         if key == ord("q"):
             break
+        elif key in (ord("P"), ord("p")):
+            sort_key = "cpu"
+        elif key in (ord("M"), ord("m")):
+            sort_key = "mem"
+        elif key in (ord("N"), ord("n")):
+            sort_key = "pid"
+        elif key in (ord("T"), ord("t")):
+            sort_key = "time"
         elif key == curses.KEY_RESIZE:
             stdscr.clear()
 
