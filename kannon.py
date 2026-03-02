@@ -230,9 +230,12 @@ def main(stdscr):
 
     sort_key = "cpu"
 
+    scroll_offset = 0
+
     while True:
         stdscr.erase()
         max_y, max_x = stdscr.getmaxyx()
+        display_list = []
 
         if max_y < 10 or max_x < 40:
             display_text(stdscr, 0, 0, "Terminal too small!", curses.A_BOLD)
@@ -347,6 +350,10 @@ def main(stdscr):
                 mem_label = "▼%MEM" if sort_key == "mem" else "%MEM"
                 time_label = "▼TIME" if sort_key == "time" else "%TIME"
 
+                scroll_offset = max(
+                    0, min(scroll_offset, max(0, len(display_list) - 1))
+                )
+
                 hdr = (
                     f"{pid_label:>7} | {'USER':<12} | {cpu_label:>6} | "
                     f"{mem_label:>6} | {time_label:>8} | {'STATE':^5} | {'NAME':<{name_width}}"
@@ -366,7 +373,6 @@ def main(stdscr):
                 row += 1
 
             pids = [p for p in os.listdir("/proc") if p.isdigit()]
-            display_list = []
             curr_procs_state = {}
 
             sys_total_delta = max(1, agg_curr[0] - agg_prev[0])
@@ -400,7 +406,8 @@ def main(stdscr):
             footer_rows = 2
             max_proc_rows = max(0, max_y - row - footer_rows)
 
-            for proc in display_list[:max_proc_rows]:
+            visible_list = display_list[scroll_offset: scroll_offset + max_proc_rows]
+            for proc in visible_list:
                 if row >= max_y - footer_rows:
                     break
 
@@ -458,12 +465,20 @@ def main(stdscr):
             break
         elif key in (ord("P"), ord("p")):
             sort_key = "cpu"
+            scroll_offset = 0
         elif key in (ord("M"), ord("m")):
             sort_key = "mem"
+            scroll_offset = 0
         elif key in (ord("N"), ord("n")):
             sort_key = "pid"
+            scroll_offset = 0
         elif key in (ord("T"), ord("t")):
             sort_key = "time"
+            scroll_offset = 0
+        elif key == curses.KEY_UP:
+            scroll_offset = max(0, scroll_offset - 1)
+        elif key == curses.KEY_DOWN:
+            scroll_offset = min(max(0, len(display_list) - 1), scroll_offset + 1)
         elif key == curses.KEY_RESIZE:
             stdscr.clear()
 
