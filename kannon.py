@@ -2,6 +2,7 @@
 
 import os
 import pwd
+import time
 import curses
 
 CLOCK_TICKS = os.sysconf("SC_CLK_TCK")
@@ -221,7 +222,7 @@ def get_loadavg():
 def main(stdscr):
     init_color()
     curses.curs_set(0)
-    stdscr.timeout(1000)
+    stdscr.timeout(100)
 
     prev_cpu_stats = get_cpu_stats()
     prev_procs = {}
@@ -233,6 +234,13 @@ def main(stdscr):
     scroll_offset = 0
     max_proc_rows = 0
 
+    last_update = 0
+    update_interval = 1.0
+    cached_display_list = []
+    cached_cpu_usages = {}
+    cached_global_usage = 0.0
+    cached_mem_total = 0
+
     while True:
         stdscr.erase()
         max_y, max_x = stdscr.getmaxyx()
@@ -241,8 +249,11 @@ def main(stdscr):
         if max_y < 10 or max_x < 40:
             display_text(stdscr, 0, 0, "Terminal too small!", curses.A_BOLD)
         else:
-            curr_cpu_stats = get_cpu_stats()
+            now = time.monotonic()
+            need_update = (now - last_update) >= update_interval
             row = 0
+
+            curr_cpu_stats = get_cpu_stats()
 
             cores = sorted(
                 [k for k in curr_cpu_stats if k != "cpu"],
@@ -259,11 +270,23 @@ def main(stdscr):
 
             agg_curr = curr_cpu_stats.get("cpu", (0, 0))
             agg_prev = prev_cpu_stats.get("cpu", (0, 0))
-            global_usage = calculate_cpu_usage(agg_curr, agg_prev)
+
+
+            if need_update:
+                cached_global_usage = calculate_cpu_usage(agg_curr, agg_prev)
+
+                for core in cores:
+                    cached_cpu_usages[core] = calculate_cpu_usage(
+                        curr_cpu_stats[core],
+                        prev_cpu_stats.get(core, (0, 0)),
+                    )
+
             avg_bar_width = 2 * bar_width + label_width + 13
 
             display_text(stdscr, row, 2, f"{'AVG':<{label_width}}: ", curses.A_BOLD)
-            draw_bar(stdscr, row, 2 + label_width + 2, global_usage, avg_bar_width)
+            draw_bar(
+                stdscr, row, 2 + label_width + 2, cached_global_usage, avg_bar_width
+            )
             row += 1
 
             half = (len(cores) + 1) // 2
@@ -274,10 +297,7 @@ def main(stdscr):
                     break
 
                 left_name = cores[i]
-                left_usage = calculate_cpu_usage(
-                    curr_cpu_stats[left_name],
-                    prev_cpu_stats.get(left_name, (0, 0)),
-                )
+                left_usage = cached_cpu_usages.get(left_name, 0.0)
                 display_text(stdscr, row, 2, f"{left_name.upper():<{label_width}}: ")
                 draw_bar(stdscr, row, 2 + label_width + 2, left_usage, bar_width)
 
@@ -285,10 +305,7 @@ def main(stdscr):
                 if j < len(cores):
                     rc = 2 + col_width + 2
                     right_name = cores[j]
-                    right_usage = calculate_cpu_usage(
-                        curr_cpu_stats[right_name],
-                        prev_cpu_stats.get(right_name, (0, 0)),
-                    )
+                    right_usage = cached_cpu_usages.get(right_name, 0.0)
                     display_text(
                         stdscr, row, rc, f"{right_name.upper():<{label_width}}: "
                     )
@@ -369,38 +386,42 @@ def main(stdscr):
                 display_text(stdscr, row, 0, sep, curses.color_pair(4))
                 row += 1
 
-            pids = [p for p in os.listdir("/proc") if p.isdigit()]
-            curr_procs_state = {}
+            if need_update:
+                pids = [p for p in os.listdir("/proc") if p.isdigit()]
+                curr_procs_state = {}
+                sys_total_delta = max(1, agg_curr[0] - agg_prev[0])
 
-            sys_total_delta = max(1, agg_curr[0] - agg_prev[0])
+                for pid in pids:
+                    proc = get_process_info(pid)
+                    if not proc:
+                        continue
+                    pid_int = int(proc["pid"])
+                    prev_ticks = prev_procs.get(pid_int, None)
+                    if prev_ticks is not None:
+                        proc_delta = proc["ticks"] - prev_ticks
+                        proc["cpu_usage"] = (proc_delta / sys_total_delta) * 100 * cpu_count
+                    else:
+                        proc["cpu_usage"] = 0.0
+                    curr_procs_state[pid_int] = proc["ticks"]
+                    display_list.append(proc)
 
-            for pid in pids:
-                proc = get_process_info(pid)
-                if not proc:
-                    continue
+                if sort_key == "cpu":
+                    display_list.sort(key=lambda x: x["cpu_usage"], reverse=True)
+                elif sort_key == "mem":
+                    display_list.sort(key=lambda x: x["rss"], reverse=True)
+                elif sort_key == "pid":
+                    display_list.sort(key=lambda x: int(x["pid"]))
+                elif sort_key == "time":
+                    display_list.sort(key=lambda x: x["cpu_time"], reverse=True)
 
-                pid_int = int(proc["pid"])
-                prev_ticks = prev_procs.get(pid_int, None)
-
-                if prev_ticks is not None:
-                    proc_delta = proc["ticks"] - prev_ticks
-                    proc["cpu_usage"] = (proc_delta / sys_total_delta) * 100 * cpu_count
-                else:
-                    proc["cpu_usage"] = 0.0
-
-                curr_procs_state[pid_int] = proc["ticks"]
-                display_list.append(proc)
-
-            if sort_key == "cpu":
-                display_list.sort(key=lambda x: x["cpu_usage"], reverse=True)
-            elif sort_key == "mem":
-                display_list.sort(key=lambda x: x["rss"], reverse=True)
-            elif sort_key == "pid":
-                display_list.sort(key=lambda x: int(x["pid"]))
-            elif sort_key == "time":
-                display_list.sort(key=lambda x: x["cpu_time"], reverse=True)
-
-            scroll_offset = max(0, min(scroll_offset, max(0, len(display_list) - 1)))
+                cached_display_list = display_list
+                cached_mem_total = mem_total
+                prev_cpu_stats = curr_cpu_stats
+                prev_procs = curr_procs_state
+                last_update = now
+            else:
+                display_list = cached_display_list
+                mem_total = cached_mem_total
 
             footer_rows = 2
             max_proc_rows = max(0, max_y - row - footer_rows)
@@ -454,8 +475,6 @@ def main(stdscr):
 
                 display_text(stdscr, footer_row + 1, 0, status, curses.A_BOLD)
 
-            prev_cpu_stats = curr_cpu_stats
-            prev_procs = curr_procs_state
 
         stdscr.refresh()
 
@@ -465,15 +484,19 @@ def main(stdscr):
         elif key in (ord("P"), ord("p")):
             sort_key = "cpu"
             scroll_offset = 0
+            last_update = 0
         elif key in (ord("M"), ord("m")):
             sort_key = "mem"
             scroll_offset = 0
+            last_update = 0
         elif key in (ord("N"), ord("n")):
             sort_key = "pid"
             scroll_offset = 0
+            last_update = 0
         elif key in (ord("T"), ord("t")):
             sort_key = "time"
             scroll_offset = 0
+            last_update = 0
         elif key == curses.KEY_UP:
             scroll_offset = max(0, scroll_offset - 1)
         elif key == curses.KEY_DOWN:
