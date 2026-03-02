@@ -231,6 +231,7 @@ def main(stdscr):
     sort_key = "cpu"
 
     scroll_offset = 0
+    max_proc_rows = 0
 
     while True:
         stdscr.erase()
@@ -348,11 +349,7 @@ def main(stdscr):
                 pid_label = "▼PID" if sort_key == "pid" else "PID"
                 cpu_label = "▼%CPU" if sort_key == "cpu" else "%CPU"
                 mem_label = "▼%MEM" if sort_key == "mem" else "%MEM"
-                time_label = "▼TIME" if sort_key == "time" else "%TIME"
-
-                scroll_offset = max(
-                    0, min(scroll_offset, max(0, len(display_list) - 1))
-                )
+                time_label = "▼TIME" if sort_key == "time" else "TIME"
 
                 hdr = (
                     f"{pid_label:>7} | {'USER':<12} | {cpu_label:>6} | "
@@ -402,6 +399,8 @@ def main(stdscr):
                 display_list.sort(key=lambda x: int(x["pid"]))
             elif sort_key == "time":
                 display_list.sort(key=lambda x: x["cpu_time"], reverse=True)
+
+            scroll_offset = max(0, min(scroll_offset, max(0, len(display_list) - 1)))
 
             footer_rows = 2
             max_proc_rows = max(0, max_y - row - footer_rows)
@@ -479,6 +478,14 @@ def main(stdscr):
             scroll_offset = max(0, scroll_offset - 1)
         elif key == curses.KEY_DOWN:
             scroll_offset = min(max(0, len(display_list) - 1), scroll_offset + 1)
+        elif key == curses.KEY_PPAGE:
+            scroll_offset = max(0, scroll_offset - max_proc_rows)
+        elif key == curses.KEY_NPAGE:
+            scroll_offset = min(len(display_list) - 1, scroll_offset + max_proc_rows)
+        elif key == curses.KEY_HOME:
+            scroll_offset = 0
+        elif key == curses.KEY_END:
+            scroll_offset = max(0, len(display_list) - max_proc_rows)
         elif key == curses.KEY_RESIZE:
             stdscr.clear()
 
