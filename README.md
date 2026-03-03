@@ -4,7 +4,7 @@ An educational recreation of `htop` built to understand Linux internals. Parses 
 
 ## Demo
 
-<script src="https://asciinema.org/a/W0FCAfceE6u3frBV.js" id="asciicast-W0FCAfceE6u3frBV" async="true"></script>
+![demo](kannon-demo.svg)
 
 ## Features
 
