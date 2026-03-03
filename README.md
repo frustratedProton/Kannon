@@ -4,7 +4,7 @@ An educational recreation of `htop` built to understand Linux internals. Parses 
 
 ## Demo
 
-![demo](kannon-demo.svg)
+![demo](assets/kannon-demo.svg)
 
 ## Features
 
