@@ -4,8 +4,18 @@ import os
 import pwd
 import time
 import curses
+import signal
 
 CLOCK_TICKS = os.sysconf("SC_CLK_TCK")
+
+SIGNAL_MENU = [
+    ("SIGTERM (15) — graceful termination", signal.SIGTERM),
+    ("SIGKILL  (9) — force kill", signal.SIGKILL),
+    ("SIGSTOP (19) — pause process", signal.SIGSTOP),
+    ("SIGCONT (18) — resume process", signal.SIGCONT),
+    ("SIGHUP   (1) — hangup / reload", signal.SIGHUP),
+    ("SIGINT   (2) — interrupt (Ctrl-C)", signal.SIGINT),
+]
 
 def init_color():
     """ "curses color pairs for utilization"""
@@ -15,6 +25,9 @@ def init_color():
     curses.init_pair(2, curses.COLOR_YELLOW, -1)  # medium usage
     curses.init_pair(3, curses.COLOR_RED, -1)  # high usage
     curses.init_pair(4, curses.COLOR_CYAN, -1)  # headers / separators
+    curses.init_pair(5, curses.COLOR_WHITE, curses.COLOR_RED)  # errors
+    curses.init_pair(6, curses.COLOR_BLACK, curses.COLOR_GREEN)  # success
+
 
 def display_text(stdscr, row, col, text, attr=0):
     """
@@ -219,6 +232,126 @@ def get_loadavg():
     return f"{fields[0]} {fields[1]} {fields[2]}"
 
 
+def display_status(stdscr, message, attr=0):
+    max_y, max_x = stdscr.getmaxyx()
+    row = max_y - 1
+    stdscr.move(row, 0)
+    stdscr.clrtoeol()
+    display_text(stdscr, row, 0, message, attr | curses.A_BOLD)
+    stdscr.refresh()
+    stdscr.timeout(1500)
+    stdscr.getch()
+    stdscr.timeout(100)
+
+def prompt_input(stdscr, prompt_text):
+    """Show prompt on bottom row, return typed string or None on Escape"""
+    max_y, max_x = stdscr.getmaxyx()
+    row = max_y - 1
+
+    stdscr.move(row, 0)
+    stdscr.clrtoeol()
+    display_text(stdscr, row, 0, prompt_text, curses.A_BOLD)
+    stdscr.refresh()
+
+
+    buf = ""
+    prompt_len = len(prompt_text)
+
+    try:
+        while True:
+            stdscr.move(row, prompt_len)
+            stdscr.clrtoeol()
+            display_text(stdscr, row, prompt_len, buf)
+            stdscr.move(row, prompt_len + len(buf)) 
+            stdscr.refresh()
+
+            ch = stdscr.getch()
+
+            if ch == 27:  # Escape
+                return None
+            elif ch in (10, 13, curses.KEY_ENTER):  
+                return buf
+            elif ch in (curses.KEY_BACKSPACE, 127, 8): 
+                if len(buf) > 0:
+                    buf = buf[:-1]
+            elif 32 <= ch < 127:  # printable ascii text (symbols and a-z)
+                buf += chr(ch)
+    except KeyboardInterrupt:
+        return None
+    finally:
+        curses.curs_set(0)
+        stdscr.timeout(100)
+
+def pick_signal(stdscr):
+    """Popup menu to choose a signal. Return signal or None"""
+    max_y, max_x = stdscr.getmaxyx()
+    menu_w = 44
+    menu_h = len(SIGNAL_MENU) + 4
+    start_y = max(0, (max_y - menu_h) // 2)
+    start_x = max(0, (max_x - menu_w) // 2)
+    selected = 0
+
+    stdscr.timeout(-1)
+    try:
+        while True:
+            for i in range(menu_h):
+                display_text(stdscr, start_y + i, start_x, " " * menu_w, curses.A_REVERSE)
+
+            display_text(stdscr, start_y, start_x + 2, " Choose signal (↑↓ Enter, Esc=cancel) ", curses.A_BOLD | curses.A_REVERSE)
+
+            for idx, (label, _sig) in enumerate(SIGNAL_MENU):
+                attr = curses.A_REVERSE
+                if idx == selected:
+                    attr = curses.color_pair(4) | curses.A_BOLD
+                display_text(stdscr, start_y + 2 + idx, start_x + 2,
+                             f" {label:<{menu_w - 4}} ", attr)
+            stdscr.refresh()
+            ch = stdscr.getch()
+
+            if ch == 27:
+                return None
+            elif ch == curses.KEY_UP:
+                selected = (selected - 1) % len(SIGNAL_MENU)
+            elif ch == curses.KEY_DOWN:
+                selected = (selected + 1) % len(SIGNAL_MENU)
+            elif ch in (10, 13, curses.KEY_ENTER):
+                return SIGNAL_MENU[selected][1] 
+    finally:
+        stdscr.timeout(100)
+
+
+def kill_prompt(stdscr, proc):
+    """Kill flow using selected process."""
+    pid = int(proc["pid"])
+    proc_name = proc["name"]
+
+    sig = pick_signal(stdscr)
+    if sig is None:
+        display_status(stdscr, " Cancelled.", curses.color_pair(4))
+        return
+
+    answer = prompt_input(
+        stdscr, f"Send {signal.Signals(sig).name} to {pid} ({proc_name})? [y/N]: "
+    )
+    if answer is None or answer.strip().lower() != "y":
+        display_status(stdscr, " Cancelled.", curses.color_pair(4))
+        return
+
+    try:
+        os.kill(pid, sig)
+        display_status(
+            stdscr,
+            f" Sent {signal.Signals(sig).name} to PID {pid}.",
+            curses.color_pair(6),
+        )
+    except ProcessLookupError:
+        display_status(stdscr, f" PID {pid}: process not found.", curses.color_pair(5))
+    except PermissionError:
+        display_status(stdscr, f" PID {pid}: permission denied.", curses.color_pair(5))
+    except OSError as exc:
+        display_status(stdscr, f" PID {pid}: {exc}", curses.color_pair(5))
+
+
 def main(stdscr):
     init_color()
     curses.curs_set(0)
@@ -233,6 +366,7 @@ def main(stdscr):
 
     scroll_offset = 0
     max_proc_rows = 0
+    selected_idx = 0
 
     last_update = 0
     update_interval = 1.0
@@ -270,7 +404,6 @@ def main(stdscr):
 
             agg_curr = curr_cpu_stats.get("cpu", (0, 0))
             agg_prev = prev_cpu_stats.get("cpu", (0, 0))
-
 
             if need_update:
                 cached_global_usage = calculate_cpu_usage(agg_curr, agg_prev)
@@ -427,10 +560,13 @@ def main(stdscr):
             max_proc_rows = max(0, max_y - row - footer_rows)
 
             visible_list = display_list[scroll_offset: scroll_offset + max_proc_rows]
-            for proc in visible_list:
+            for list_idx, proc in enumerate(visible_list):
                 if row >= max_y - footer_rows:
                     break
 
+                abs_idx = scroll_offset + list_idx
+                is_selected = (abs_idx == selected_idx)
+                
                 user = get_user(proc["uid"], user_cache)
                 name = proc["name"]
 
@@ -447,7 +583,9 @@ def main(stdscr):
                     f"| {proc['state']:^5} | {name:<{name_width}}"
                 )
 
-                if proc["cpu_usage"] > 50:
+                if is_selected:
+                    attr = curses.A_REVERSE | curses.A_BOLD
+                elif proc["cpu_usage"] > 50:
                     attr = curses.color_pair(3) | curses.A_BOLD
                 elif proc["cpu_usage"] > 10:
                     attr = curses.color_pair(2)
@@ -470,13 +608,15 @@ def main(stdscr):
 
                 status = (
                     f" Tasks: {len(display_list)} | "
-                    f"Sort: {sort_labels[sort_key]} (P=CPU M=Mem N=PID T=Time) | q=Quit"
+                    f"Sort: {sort_labels[sort_key]} (P=CPU M=Mem N=PID T=Time) "
+                    f"| ↑↓=Select k=Kill | q=Quit"
                 )
 
                 display_text(stdscr, footer_row + 1, 0, status, curses.A_BOLD)
 
-
         stdscr.refresh()
+
+        # trigger warning - incoming terrible looking if else chain
 
         key = stdscr.getch()
         if key == ord("q"):
@@ -497,18 +637,30 @@ def main(stdscr):
             sort_key = "time"
             scroll_offset = 0
             last_update = 0
+        elif key in (ord("K"), ord("k")):
+            if cached_display_list and 0 <= selected_idx < len(cached_display_list):
+                kill_prompt(stdscr, cached_display_list[selected_idx])
+                last_update = 0
         elif key == curses.KEY_UP:
-            scroll_offset = max(0, scroll_offset - 1)
+            selected_idx = max(0, selected_idx - 1)
+            if selected_idx < scroll_offset:
+                scroll_offset = selected_idx
         elif key == curses.KEY_DOWN:
-            scroll_offset = min(max(0, len(display_list) - 1), scroll_offset + 1)
+            selected_idx = min(len(cached_display_list) - 1, selected_idx + 1)
+            if selected_idx >= scroll_offset + max_proc_rows:
+                scroll_offset = selected_idx - max_proc_rows + 1
         elif key == curses.KEY_PPAGE:
+            selected_idx = max(0, selected_idx - max_proc_rows)
             scroll_offset = max(0, scroll_offset - max_proc_rows)
         elif key == curses.KEY_NPAGE:
-            scroll_offset = min(len(display_list) - 1, scroll_offset + max_proc_rows)
+            selected_idx = min(len(cached_display_list) - 1, selected_idx + max_proc_rows)
+            scroll_offset = min(len(cached_display_list) - 1, scroll_offset + max_proc_rows)
         elif key == curses.KEY_HOME:
+            selected_idx = 0
             scroll_offset = 0
         elif key == curses.KEY_END:
-            scroll_offset = max(0, len(display_list) - max_proc_rows)
+            selected_idx = max(0, len(cached_display_list) - 1)
+            scroll_offset = max(0, len(cached_display_list) - max_proc_rows)
         elif key == curses.KEY_RESIZE:
             stdscr.clear()
 
