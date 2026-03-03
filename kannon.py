@@ -368,6 +368,10 @@ def main(stdscr):
     max_proc_rows = 0
     selected_idx = 0
 
+    search_query = ""
+    search_mode = False
+    search_buf = ""
+
     last_update = 0
     update_interval = 1.0
     cached_display_list = []
@@ -547,6 +551,14 @@ def main(stdscr):
                 elif sort_key == "time":
                     display_list.sort(key=lambda x: x["cpu_time"], reverse=True)
 
+                if search_query:
+                    display_list = [
+                        p for p in display_list
+                        if search_query in p["name"].lower()
+                        or search_query in str(p["pid"])
+                        or search_query in get_user(p["uid"], user_cache).lower()
+                    ]
+
                 cached_display_list = display_list
                 cached_mem_total = mem_total
                 prev_cpu_stats = curr_cpu_stats
@@ -559,6 +571,11 @@ def main(stdscr):
             footer_rows = 2
             max_proc_rows = max(0, max_y - row - footer_rows)
 
+            if cached_display_list:
+                selected_idx = min(selected_idx, len(cached_display_list) - 1)
+            else:
+                selected_idx = 0
+
             visible_list = display_list[scroll_offset: scroll_offset + max_proc_rows]
             for list_idx, proc in enumerate(visible_list):
                 if row >= max_y - footer_rows:
@@ -566,7 +583,7 @@ def main(stdscr):
 
                 abs_idx = scroll_offset + list_idx
                 is_selected = (abs_idx == selected_idx)
-                
+
                 user = get_user(proc["uid"], user_cache)
                 name = proc["name"]
 
@@ -595,6 +612,12 @@ def main(stdscr):
                 display_text(stdscr, row, 0, line, attr)
                 row += 1
 
+            if not display_list and search_query:
+                display_text(stdscr, row, 2,
+                            f"No processes matching '{search_query}'",
+                            curses.color_pair(3) | curses.A_BOLD)
+                row += 1
+
             footer_row = max_y - 2
             if footer_row >= row and footer_row < max_y:
                 display_text(stdscr, footer_row, 0, sep, curses.color_pair(4))
@@ -606,13 +629,23 @@ def main(stdscr):
                     "time": "TIME",
                 }
 
-                status = (
-                    f" Tasks: {len(display_list)} | "
-                    f"Sort: {sort_labels[sort_key]} (P=CPU M=Mem N=PID T=Time) "
-                    f"| ↑↓=Select k=Kill | q=Quit"
-                )
+                if search_mode:
+                    search_prompt = f" Search: {search_buf}█"
+                    remaining = max_x - len(search_prompt) - 1
+                    hint = " (Enter=confirm Esc=cancel)"
+                    if remaining > len(hint):
+                        search_prompt += " " * (remaining - len(hint)) + hint
+                    display_text(stdscr, footer_row + 1, 0, search_prompt, curses.A_BOLD | curses.color_pair(4))
 
-                display_text(stdscr, footer_row + 1, 0, status, curses.A_BOLD)
+                else:
+                    search_info = f" Filter: '{search_query}' (\\=clear)" if search_query else ""
+                    status = (
+                        f" Tasks: {len(display_list)}{search_info} | "
+                        f"Sort: {sort_labels[sort_key]} (P=CPU M=Mem N=PID T=Time) "
+                        f"| ↑↓=Select k=Kill /=Search | q=Quit"
+                    )
+
+                    display_text(stdscr, footer_row + 1, 0, status, curses.A_BOLD)
 
         stdscr.refresh()
 
@@ -621,6 +654,44 @@ def main(stdscr):
         key = stdscr.getch()
         if key == ord("q"):
             break
+
+        if search_mode:
+            if key == 27:
+                search_mode = False
+                search_buf = ""
+                search_query = ""
+                curses.curs_set(0)
+                selected_idx = 0
+                scroll_offset = 0
+                last_update = 0
+                continue
+
+            elif key in (10, 13, curses.KEY_ENTER):
+                search_mode = False
+                search_query = search_buf.lower()
+                curses.curs_set(0)
+                selected_idx = 0
+                scroll_offset = 0
+                last_update = 0
+                continue
+
+            elif key in (curses.KEY_BACKSPACE, 127, 8):
+                if search_buf:
+                    search_buf = search_buf[:-1]
+                    search_query = search_buf.lower()
+                    selected_idx = 0
+                    scroll_offset = 0
+                    last_update = 0
+                continue
+
+            elif 32 <= key < 127:
+                search_buf += chr(key)
+                search_query = search_buf.lower()
+                selected_idx = 0
+                scroll_offset = 0
+                last_update = 0
+                continue
+
         elif key in (ord("P"), ord("p")):
             sort_key = "cpu"
             scroll_offset = 0
@@ -661,6 +732,19 @@ def main(stdscr):
         elif key == curses.KEY_END:
             selected_idx = max(0, len(cached_display_list) - 1)
             scroll_offset = max(0, len(cached_display_list) - max_proc_rows)
+        elif key == ord("/"):
+            search_mode = True
+            search_buf = search_query
+            curses.curs_set(1)
+        elif key == curses.KEY_DC or key == ord("\\"): 
+            search_query = ""
+            search_mode = False
+            search_buf = ""
+            curses.curs_set(0)
+            selected_idx = 0
+            scroll_offset = 0
+            last_update = 0
+
         elif key == curses.KEY_RESIZE:
             stdscr.clear()
 
