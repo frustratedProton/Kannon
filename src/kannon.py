@@ -231,6 +231,14 @@ def get_loadavg():
         fields = f.read().split()
     return f"{fields[0]} {fields[1]} {fields[2]}"
 
+def get_cmdline(pid) -> str | None:
+    """Returns the /proc/{pid}/cmdline"""
+    try:
+        with open(f"/proc/{pid}/cmdline") as f:
+            cmdline = f.read();
+            return cmdline
+    except (PermissionError, FileNotFoundError, ValueError, IndexError):
+        pass
 
 def display_status(stdscr, message, attr=0):
     max_y, max_x = stdscr.getmaxyx()
@@ -383,6 +391,7 @@ def main(stdscr):
         stdscr.erase()
         max_y, max_x = stdscr.getmaxyx()
         display_list = []
+        cmdline = ""
 
         if max_y < 10 or max_x < 40:
             display_text(stdscr, 0, 0, "Terminal too small!", curses.A_BOLD)
@@ -493,7 +502,7 @@ def main(stdscr):
                 row += 1
 
             sep = "=" * (max_x - 1)
-            name_width = max(4, max_x - 67)
+            name_width = max(4, max_x - 85)
 
             if row < max_y:
                 display_text(stdscr, row, 0, sep, curses.color_pair(4))
@@ -507,7 +516,7 @@ def main(stdscr):
 
                 hdr = (
                     f"{pid_label:>7} | {'USER':<12} | {cpu_label:>6} | "
-                    f"{mem_label:>6} | {time_label:>8} | {'STATE':^5} | {'NAME':<{name_width}}"
+                    f"{mem_label:>6} | {time_label:>8} | {'STATE':^5} | {'NAME':<16} | {'COMMAND':<{name_width}}"
                 )
 
                 display_text(
@@ -533,6 +542,8 @@ def main(stdscr):
                     if not proc:
                         continue
                     pid_int = int(proc["pid"])
+                    raw = get_cmdline(proc["pid"])
+                    proc["cmdline"] = raw.replace("\x00", " ").strip() if raw else ""
                     prev_ticks = prev_procs.get(pid_int, None)
                     if prev_ticks is not None:
                         proc_delta = proc["ticks"] - prev_ticks
@@ -555,6 +566,7 @@ def main(stdscr):
                     display_list = [
                         p for p in display_list
                         if search_query in p["name"].lower()
+                        or search_query in p.get("cmdline", "").lower()
                         or search_query in str(p["pid"])
                         or search_query in get_user(p["uid"], user_cache).lower()
                     ]
@@ -586,18 +598,20 @@ def main(stdscr):
 
                 user = get_user(proc["uid"], user_cache)
                 name = proc["name"]
-
+                cmdline = proc.get("cmdline", "")
                 proc_mem = (proc["rss"] / mem_total) * 100 if mem_total else 0
 
                 if len(user) > 12:
                     user = user[:11] + "~"
                 if len(name) > name_width:
                     name = name[: name_width - 1] + "…"
+                if len(cmdline) > name_width:
+                    cmdline = cmdline[: name_width - 1] + "…"
 
                 line = (
                     f"{proc['pid']:>7} | {user:<12} | {proc['cpu_usage']:>5.1f}% "
                     f"| {proc_mem:>5.1f}% | {format_time(proc['cpu_time']):>8} "
-                    f"| {proc['state']:^5} | {name:<{name_width}}"
+                    f"| {proc['state']:^5} | {name:<16} | {cmdline:<{name_width}}"
                 )
 
                 if is_selected:
